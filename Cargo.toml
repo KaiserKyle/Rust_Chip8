@@ -7,3 +7,4 @@ authors = ["Kyle"]
 glium = "*"
 schedule_recv = "*"
 time = "*"
+rand = "*"
