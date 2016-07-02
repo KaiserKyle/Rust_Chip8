@@ -4,7 +4,6 @@ extern crate schedule_recv;
 extern crate time;
 extern crate rand;
 
-use std::io;
 use std::io::prelude::*;
 
 use std::fs::File;
@@ -14,7 +13,6 @@ use rand::Rng;
 
 use glium::{DisplayBuild, Surface};
 use glium::glutin;
-use glium::index::PrimitiveType;
 
 #[cfg(test)]
 mod tests;
@@ -47,7 +45,7 @@ struct Chip8State {
     sound_timer: u16,
     stack_pointer: usize,
     stack: Vec<usize>,
-    v: Vec<u16>,
+    v: Vec<u8>,
     gfx: Vec<u8>,
     key_press: Vec<u8>
 }
@@ -56,6 +54,7 @@ fn main() {
     // Initialize State
     let mut state: Chip8State = Default::default(); 
     let mut memory = vec![0u8; 4096];
+    init_state(&mut state);
     
     // Load fontset
     for x in 0..80 {
@@ -64,7 +63,6 @@ fn main() {
     
     // Open window
     let display = glutin::WindowBuilder::new()
-        .with_vsync()
         .build_glium()
         .unwrap();
         
@@ -72,13 +70,7 @@ fn main() {
     target.clear_color(0.0, 0.0, 1.0, 1.0);
     target.finish().unwrap();
     
-    // Load program
-    state.pc = 0x200;
-    state.stack = vec![0usize; 16];
-    state.v = vec![0u16; 16];
-    state.gfx = vec![0u8; 2048];
-    state.key_press = vec![0u8; 16];
-    
+    // Load program    
     let mut file_data = Vec::new();
     let mut f = File::open("c:\\emu\\chip8\\BRIX.").unwrap();
     
@@ -114,9 +106,18 @@ fn main() {
     loop {
         handle_keyboard(&mut state, &display);
         emulate_cycle(&mut state, &mut memory, &display);
-        //tick.recv().unwrap();
+        tick.recv().unwrap();
     }
     //println!("Opcode {}", opcode);
+}
+
+fn init_state(state: &mut Chip8State)
+{
+    state.pc = 0x200;
+    state.stack = vec![0usize; 16];
+    state.v = vec![0u8; 16];
+    state.gfx = vec![0u8; 2048];
+    state.key_press = vec![0u8; 16];
 }
 
 fn handle_keyboard(state: &mut Chip8State, display: &glium::backend::glutin_backend::GlutinFacade) {
@@ -307,14 +308,14 @@ fn execute_opcode(opcode: u16, state: &mut Chip8State, memory: &mut Vec<u8>) -> 
             }
         0x3000 => {
             //println!("0x3 opcode (skip if equal)");
-            if state.v[((opcode & 0x0F00) >> 8) as usize] == (opcode & 0x00FF) {
+            if state.v[((opcode & 0x0F00) >> 8) as usize] == (opcode & 0x00FF) as u8 {
                 state.pc += 2;
                 }
             state.pc += 2;
             }
         0x4000 => {
             //println!("0x4 opcode (skip if not equal)");
-            if state.v[((opcode & 0x0F00) >> 8) as usize] != (opcode & 0x00FF) {
+            if state.v[((opcode & 0x0F00) >> 8) as usize] != (opcode & 0x00FF) as u8 {
                 state.pc += 2;
                 }
             state.pc += 2;
@@ -328,12 +329,18 @@ fn execute_opcode(opcode: u16, state: &mut Chip8State, memory: &mut Vec<u8>) -> 
             }
         0x6000 => {
             //println!("0x6 opcode (set register)");
-            state.v[((opcode & 0x0F00) >> 8) as usize] = opcode & 0x00FF;
+            state.v[((opcode & 0x0F00) >> 8) as usize] = (opcode & 0x00FF) as u8;
             state.pc += 2;
             }
         0x7000 => {
             //println!("0x7 opcode (add to register)");
-            state.v[((opcode & 0x0F00) >> 8) as usize] += opcode & 0x00FF;
+            let number_to_add = opcode & 0x00FF;
+            let big_sum =  state.v[((opcode & 0x0F00) >> 8) as usize] as u16 + number_to_add;
+            if big_sum > 0xff {
+                state.v[((opcode & 0x0F00) >> 8) as usize] = (big_sum - 0xff - 1) as u8;
+            } else {
+                state.v[((opcode & 0x0F00) >> 8) as usize] = big_sum as u8;
+            }
             state.pc += 2;
             }
         0x8000 => {
@@ -342,6 +349,10 @@ fn execute_opcode(opcode: u16, state: &mut Chip8State, memory: &mut Vec<u8>) -> 
                 0x0000 => {
                     //println!("Set VX to VY");
                     state.v[((opcode & 0x0F00) >> 8) as usize] = state.v[((opcode & 0x00F0) >> 4) as usize];
+                }
+                0x0001 => {
+                    //println!("Set VX to VX | VY");
+                    state.v[((opcode & 0x0F00) >> 8) as usize] = state.v[((opcode & 0x0F00) >> 8) as usize] | state.v[((opcode & 0x00F0) >> 4) as usize];
                 }
                 0x0002 => {
                     //println!("Set VX to VX & VY");
@@ -355,10 +366,12 @@ fn execute_opcode(opcode: u16, state: &mut Chip8State, memory: &mut Vec<u8>) -> 
                     //println!("Add VY to VX, set overflow");
                     if state.v[((opcode & 0x00F0) >> 4) as usize] > (0xFF - state.v[((opcode & 0x0F00) >> 8) as usize]) {
                         state.v[0xF] = 1;
+                        let big_total : u16 = state.v[((opcode & 0x00F0) >> 4) as usize] as u16 + state.v[((opcode & 0x0F00) >> 8) as usize] as u16 - 0x100;
+                        state.v[((opcode & 0x0F00) >> 8) as usize] = big_total as u8;
                     } else {
                         state.v[0xF] = 0;
+                        state.v[((opcode & 0x0F00) >> 8) as usize] += state.v[((opcode & 0x00F0) >> 4) as usize];
                     }
-                    state.v[((opcode & 0x0F00) >> 8) as usize] += state.v[((opcode & 0x00F0) >> 4) as usize];
                 }
                 0x0005 => {
                     //println!("Subtract VY from VX, set overflow");
@@ -389,13 +402,13 @@ fn execute_opcode(opcode: u16, state: &mut Chip8State, memory: &mut Vec<u8>) -> 
             state.pc += 2;
             }
         0xC000 => {
-            state.v[((opcode & 0x0F00) >> 8) as usize] = (opcode & 0x00FF) & (rand::thread_rng().gen::<u16>() & 0xFF);
+            state.v[((opcode & 0x0F00) >> 8) as usize] = ((opcode & 0x00FF) as u8) & (rand::thread_rng().gen::<u8>() & 0xFF);
             state.pc += 2;
             }
         0xD000 => {
             //println!("Draw sprite");
-            let x = state.v[((opcode & 0x0F00) >> 8) as usize];
-            let y = state.v[((opcode & 0x00F0) >> 4) as usize];
+            let x = state.v[((opcode & 0x0F00) >> 8) as usize] as u16;
+            let y = state.v[((opcode & 0x00F0) >> 4) as usize] as u16;
             let height = opcode & 0x000F;
             
             // Reset carry flag
@@ -442,7 +455,7 @@ fn execute_opcode(opcode: u16, state: &mut Chip8State, memory: &mut Vec<u8>) -> 
             match operation {
                 0x0007 => {
                     //println!("Read delay timer");
-                    state.v[((opcode & 0x0F00) >> 8) as usize] = state.delay_timer;
+                    state.v[((opcode & 0x0F00) >> 8) as usize] = state.delay_timer as u8;
                 }
                 0x000A => {
                     //println!("Wait for keypress");
@@ -450,7 +463,7 @@ fn execute_opcode(opcode: u16, state: &mut Chip8State, memory: &mut Vec<u8>) -> 
                     for x in 0..16 {
                         if state.key_press[x] == 1 {
                             pressed = true;
-                            state.v[((opcode & 0x0F00) >> 8) as usize] = x as u16;
+                            state.v[((opcode & 0x0F00) >> 8) as usize] = x as u8;
                             //println!("pressed");
                             break;
                         }
@@ -461,15 +474,15 @@ fn execute_opcode(opcode: u16, state: &mut Chip8State, memory: &mut Vec<u8>) -> 
                     }
                 0x0015 => {
                     //println!("Set delay timer");
-                    state.delay_timer = state.v[((opcode & 0x0F00) >> 8) as usize];
+                    state.delay_timer = state.v[((opcode & 0x0F00) >> 8) as usize] as u16;
                     }
                 0x001E => {
                     //println!("Add VX to I");
-                    state.index += state.v[((opcode & 0x0F00) >> 8) as usize];
+                    state.index += state.v[((opcode & 0x0F00) >> 8) as usize] as u16;
                     }
                 0x0029 => {
                     //println!("Put sprite at index");
-                    state.index = state.v[((opcode & 0x0F00) >> 8) as usize] * 5;
+                    state.index = state.v[((opcode & 0x0F00) >> 8) as usize] as u16 * 5;
                     }
                 0x0033 => {
                     //println!("Decimal representation");
@@ -489,7 +502,7 @@ fn execute_opcode(opcode: u16, state: &mut Chip8State, memory: &mut Vec<u8>) -> 
                     let max = ((opcode & 0x0F00) >> 8) + 1;
                     //println!("Fills {} registers from I pointer", max);
                     for x in 0..max {
-                        state.v[x as usize] = memory[(state.index + x) as usize] as u16;
+                        state.v[x as usize] = memory[(state.index + x) as usize];
                         }
                     }
                 _ => {
